@@ -7,26 +7,42 @@ export default function Page() {
   const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => setUser(data.user));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      setUser(session?.user ?? null);
-    });
-    return () => sub.subscription.unsubscribe();
+    let unsub = () => {};
+    (async () => {
+      const { data } = await supabase.auth.getUser();
+      const u = data.user;
+      setUser(u || null);
+
+      // Subscribe to auth changes
+      const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+        const uu = session?.user ?? null;
+        setUser(uu);
+        if (uu) upsertProfile(uu);
+      });
+      unsub = () => sub.subscription.unsubscribe();
+
+      // If already logged in, upsert profile now
+      if (u) upsertProfile(u);
+    })();
+
+    return () => unsub();
   }, []);
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    location.reload();
+  async function upsertProfile(u: any) {
+    // create or update the user's profile row
+    await supabase.from("profiles").upsert({
+      id: u.id,
+      full_name: u.user_metadata?.full_name ?? null,
+      avatar_url: u.user_metadata?.avatar_url ?? null
+    });
   }
 
   if (!user) {
     return (
       <main style={{ padding: 24 }}>
-        <h1>Hello from Community MVP 🚀</h1>
-        <p style={{ marginTop: 8 }}>You’re not logged in.</p>
-        <a href="/login" style={{ marginTop: 12, display: "inline-block", textDecoration: "underline" }}>
-          Log in
-        </a>
+        <h1>Community MVP</h1>
+        <p>You are not logged in.</p>
+        <a href="/login" style={{ textDecoration: "underline" }}>Log in</a>
       </main>
     );
   }
@@ -34,13 +50,10 @@ export default function Page() {
   return (
     <main style={{ padding: 24 }}>
       <h1>Welcome</h1>
-      <p style={{ marginTop: 8 }}>You’re logged in as <strong>{user.email}</strong>.</p>
-      <button onClick={signOut} style={{ marginTop: 12, padding: "8px 12px", borderRadius: 8, border: "1px solid #ddd" }}>
-        Sign out
-      </button>
-      <div style={{ marginTop: 20 }}>
-        Next we’ll add channels, threads, and events.
-      </div>
+      <p>Logged in as {user.email}</p>
+      <a href="/app" style={{ display: "inline-block", marginTop: 12, textDecoration: "underline" }}>
+        Enter app
+      </a>
     </main>
   );
 }
