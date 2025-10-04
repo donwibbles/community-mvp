@@ -88,9 +88,7 @@ export default function MessageList({ channelId }: { channelId: string }) {
 
   async function loadProfilesFor(rows: Message[]) {
     const ids = new Set<string>();
-    rows.forEach((r) => {
-      if (r.author_id) ids.add(r.author_id);
-    });
+    rows.forEach((r) => r.author_id && ids.add(r.author_id));
     if (threadParent) {
       const { data: trows } = await supabase
         .from("messages")
@@ -105,12 +103,50 @@ export default function MessageList({ channelId }: { channelId: string }) {
         .select("id,email,display_name,avatar_url,role")
         .in("id", missing);
       const next = { ...profiles };
-      ((data as any) ?? []).forEach((p: Profile) => {
-        next[p.id] = p;
-      });
+      ((data as any) ?? []).forEach((p: Profile) => (next[p.id] = p));
       setProfiles(next);
     }
   }
+
+  // ---- live updates --------------------------------------------------------
+  useEffect(() => {
+    // messages realtime
+    const sub = supabase
+      .channel(`messages:${channelId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "messages", filter: `channel_id=eq.${channelId}` },
+        () => {
+          loadMessages();
+          if (threadParent) loadThread(threadParent.id);
+        }
+      )
+      .subscribe();
+
+    // profiles realtime (so display_name/avatars reflect immediately)
+    const profSub = supabase
+      .channel("profiles:changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "profiles" },
+        (payload: any) => {
+          const p = payload.new as Profile;
+          setProfiles((prev) => ({ ...prev, [p.id]: { ...(prev[p.id] ?? {}), ...p } }));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(sub);
+      supabase.removeChannel(profSub);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId, threadParent]);
+
+  useEffect(() => {
+    loadMe();
+    loadMessages();
+  }, [channelId]);
 
   // ---- actions -------------------------------------------------------------
   async function deleteMsg(id: string) {
@@ -134,40 +170,16 @@ export default function MessageList({ channelId }: { channelId: string }) {
       parent_id: parent.id,
       content: trimmed,
     });
-    // Open/refresh the thread to show the new reply
     setThreadParent(parent);
     await loadThread(parent.id);
   }
-
-  // ---- effects -------------------------------------------------------------
-  useEffect(() => {
-    loadMe();
-  }, []);
-
-  useEffect(() => {
-    loadMessages();
-    const sub = supabase
-      .channel(`messages:${channelId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "messages", filter: `channel_id=eq.${channelId}` },
-        () => {
-          loadMessages();
-          if (threadParent) loadThread(threadParent.id);
-        }
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(sub);
-    };
-  }, [channelId, threadParent]);
 
   // ---- permissions (UI) ----------------------------------------------------
   const canDelete = (m: Message) =>
     (me?.id && me.id === m.author_id) || me?.role === "admin" || me?.role === "moderator";
 
   const canEdit = (m: Message) =>
-    me?.role === "admin" || (me?.id && me.id === m.author_id); // admin can edit all; others only their own
+    me?.role === "admin" || (me?.id && me.id === m.author_id); // mods can’t edit others
 
   // ---- sub-components ------------------------------------------------------
   function AuthorChip({ p }: { p?: Profile }) {
@@ -223,14 +235,19 @@ export default function MessageList({ channelId }: { channelId: string }) {
     );
   }
 
-  function MessageBubble({ m, i }: { m: Message; i: number }) {
+  function MessageBubble({ m, i, isReply = false }: { m: Message; i: number; isReply?: boolean }) {
     const p = m.author_id ? profiles[m.author_id] : undefined;
     const [hover, setHover] = useState(false);
     const [quick, setQuick] = useState("");
+    const [quickFocused, setQuickFocused] = useState(false);
+
+    // alternating background
     const bg = i % 2 === 0 ? "#ffffff" : "#fcfcfd";
 
     const notAllowedEdit = !canEdit(m);
     const notAllowedDelete = !canDelete(m);
+
+    const showTools = hover || quickFocused || editingId === m.id; // keep visible while focused/editing
 
     return (
       <div
@@ -247,8 +264,8 @@ export default function MessageList({ channelId }: { channelId: string }) {
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <AuthorChip p={p} />
-          {/* timestamp only on hover */}
-          {hover && (
+          {/* timestamp only when tools are visible */}
+          {showTools && (
             <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>
               {new Date(m.created_at).toLocaleString()}
             </div>
@@ -297,16 +314,19 @@ export default function MessageList({ channelId }: { channelId: string }) {
 
         {/* actions row */}
         <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
-          <button
-            onClick={() => {
-              setThreadParent(m);
-              loadThread(m.id);
-            }}
-            style={{ fontSize: 12, textDecoration: "underline" }}
-            title="Open thread"
-          >
-            View thread
-          </button>
+          {/* Hide "View thread" on replies (no threads-of-threads) */}
+          {!isReply && (
+            <button
+              onClick={() => {
+                setThreadParent(m);
+                loadThread(m.id);
+              }}
+              style={{ fontSize: 12, textDecoration: "underline" }}
+              title="Open thread"
+            >
+              View thread
+            </button>
+          )}
 
           <button
             onClick={() => {
@@ -334,11 +354,7 @@ export default function MessageList({ channelId }: { channelId: string }) {
           <button
             onClick={() => deleteMsg(m.id)}
             disabled={notAllowedDelete}
-            title={
-              notAllowedDelete
-                ? "You don’t have permission to delete this"
-                : "Delete message"
-            }
+            title={notAllowedDelete ? "You don’t have permission to delete this" : "Delete message"}
             style={{
               fontSize: 12,
               color: notAllowedDelete ? "#d1d5db" : "#b91c1c",
@@ -349,21 +365,22 @@ export default function MessageList({ channelId }: { channelId: string }) {
             Delete
           </button>
 
-          {/* spacer */}
           <div style={{ flex: 1 }} />
 
-          {/* reaction bar: hidden until hover */}
-          <div style={{ display: hover ? "block" : "none" }}>
+          {/* reaction bar: hidden until hover or focus */}
+          <div style={{ display: showTools ? "block" : "none" }}>
             <ReactionBar messageId={m.id} />
           </div>
         </div>
 
-        {/* inline quick reply (appears on hover) */}
-        {hover && (
-          <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
+        {/* inline quick reply (stays open while focused) */}
+        {!isReply && (
+          <div style={{ marginTop: 8, display: showTools ? "flex" : "none", gap: 6 }}>
             <input
               value={quick}
               onChange={(e) => setQuick(e.target.value)}
+              onFocus={() => setQuickFocused(true)}
+              onBlur={() => setQuickFocused(false)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   quickReply(m, quick).then(() => setQuick(""));
@@ -402,12 +419,11 @@ export default function MessageList({ channelId }: { channelId: string }) {
         <div style={{ paddingLeft: 12 }}>
           <h3 style={{ fontWeight: 600, marginBottom: 8 }}>Thread</h3>
           <div style={{ marginBottom: 12 }}>
-            {/* show the parent at top for context */}
             <MessageBubble m={threadParent} i={0} />
           </div>
           <div style={{ display: "grid", gap: 8, marginBottom: 8 }}>
             {threadMessages.map((tm, i) => (
-              <MessageBubble key={tm.id} m={tm} i={i} />
+              <MessageBubble key={tm.id} m={tm} i={i} isReply />
             ))}
           </div>
           <ThreadReply
