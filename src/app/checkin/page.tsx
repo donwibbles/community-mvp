@@ -1,7 +1,12 @@
 "use client";
+
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+
+// Force this route to be dynamic (no static prerender at build time)
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export default function CheckinPage() {
   const q = useSearchParams();
@@ -11,18 +16,41 @@ export default function CheckinPage() {
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
+    // Only run in the browser when we actually have a token param
+    if (!token) {
+      setValid(false);
+      setMsg("Missing check-in token.");
+      return;
+    }
+
     (async () => {
-      const r = await fetch(`/api/checkin/validate?token=${encodeURIComponent(token)}`);
-      const data = await r.json();
-      if (!data.valid) { setValid(false); setMsg("This check-in code is invalid or expired."); return; }
-      setValid(true);
-      setShiftId(data.shift_id);
+      try {
+        const r = await fetch(`/api/checkin/validate?token=${encodeURIComponent(token)}`, {
+          // avoid caching for safety
+          cache: "no-store",
+        });
+        const data = await r.json();
+        if (!data.valid) {
+          setValid(false);
+          setMsg("This check-in code is invalid or expired.");
+          return;
+        }
+        setValid(true);
+        setShiftId(data.shift_id);
+      } catch (e: any) {
+        setValid(false);
+        setMsg("Unable to validate check-in code.");
+      }
     })();
   }, [token]);
 
   async function checkIn() {
     const { data: u } = await supabase.auth.getUser();
-    if (!u.user) { window.location.href = "/login"; return; }
+    if (!u.user) {
+      // send them to login, then they can navigate back to the QR link
+      window.location.href = "/login";
+      return;
+    }
     const { error } = await supabase
       .from("shift_signups")
       .upsert({ shift_id: shiftId, status: "attended" });
@@ -39,7 +67,7 @@ export default function CheckinPage() {
       <p>Please tap the button below to check in.</p>
       <button
         onClick={checkIn}
-        style={{ background:"black", color:"white", borderRadius:8, padding:"10px 14px" }}
+        style={{ background: "black", color: "white", borderRadius: 8, padding: "10px 14px" }}
       >
         Check me in
       </button>
