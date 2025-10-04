@@ -492,7 +492,7 @@ END:VCALENDAR`;
                   <label
                     key={s.id}
                     style={{
-                      border: "1px solid "#eee",
+                      border: "1px solid #eee",
                       borderRadius: 999,
                       padding: "4px 8px",
                       fontSize: 12,
