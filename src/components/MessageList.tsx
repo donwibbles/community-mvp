@@ -71,13 +71,22 @@ export default function MessageList({ channelId }: { channelId: string }) {
     loadMessages();
     const sub = supabase
       .channel(`messages:${channelId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "messages", filter: `channel_id=eq.${channelId}` }, () => {
-        loadMessages();
-        if (threadParent) loadThread(threadParent.id);
-      })
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "messages", filter: `channel_id=eq.${channelId}` },
+        () => {
+          loadMessages();
+          if (threadParent) loadThread(threadParent.id);
+        }
+      )
       .subscribe();
-    return () => supabase.removeChannel(sub);
-  }, [channelId, threadParent]);
+
+    // IMPORTANT: do not return the Promise from removeChannel
+    return () => {
+      // fire-and-forget; React cleanup must return void
+      supabase.removeChannel(sub);
+    };
+  }, [channelId, threadParent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const canDelete = (m: Message) => me.id && (me.id === m.author_id || me.role === "admin");
 
@@ -97,7 +106,10 @@ export default function MessageList({ channelId }: { channelId: string }) {
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
               <button
-                onClick={() => { setThreadParent(m); loadThread(m.id); }}
+                onClick={() => {
+                  setThreadParent(m);
+                  loadThread(m.id);
+                }}
                 style={{ fontSize: 12, textDecoration: "underline" }}
               >
                 View thread
@@ -138,14 +150,13 @@ export default function MessageList({ channelId }: { channelId: string }) {
             ))}
           </div>
 
-          <ThreadReply
-            channelId={channelId}
-            parentId={threadParent.id}
-            onSent={() => loadThread(threadParent.id)}
-          />
+          <ThreadReply channelId={channelId} parentId={threadParent.id} onSent={() => loadThread(threadParent.id)} />
 
           <button
-            onClick={() => { setThreadParent(null); setThreadMessages([]); }}
+            onClick={() => {
+              setThreadParent(null);
+              setThreadMessages([]);
+            }}
             style={{ marginTop: 12, fontSize: 12 }}
           >
             Close thread
