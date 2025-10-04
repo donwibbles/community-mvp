@@ -2,18 +2,24 @@ import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const token = url.searchParams.get("token");
-  if (!token) return NextResponse.json({ error: "Missing token" }, { status: 400 });
+  const { searchParams } = new URL(req.url);
+  const token = searchParams.get("token") || "";
+  if (!token) return NextResponse.json({ valid: false });
 
+  // token exists and not expired/used
   const { data, error } = await supabase
     .from("shift_checkin_tokens")
-    .select("token, shift_id, expires_at")
+    .select("shift_id, expires_at, used_at")
     .eq("token", token)
     .maybeSingle();
 
-  if (error || !data) return NextResponse.json({ valid: false, error: "Invalid token" }, { status: 404 });
+  if (error || !data) return NextResponse.json({ valid: false });
 
-  const expired = new Date(data.expires_at).getTime() < Date.now();
-  return NextResponse.json({ valid: !expired, shift_id: data.shift_id, expires_at: data.expires_at });
+  const now = Date.now();
+  const expired = new Date(data.expires_at).getTime() < now;
+  const used = !!data.used_at;
+
+  if (expired || used) return NextResponse.json({ valid: false });
+
+  return NextResponse.json({ valid: true, shift_id: data.shift_id });
 }
