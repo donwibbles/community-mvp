@@ -12,7 +12,6 @@ export default function AdminInvitesPage() {
 
   async function load() {
     setErr("");
-    // (Optional) fetch my role to conditionally show actions
     const { data: user } = await supabase.auth.getUser();
     if (user.user?.id) {
       const { data: prof } = await supabase.from("profiles").select("role").eq("id", user.user.id).maybeSingle();
@@ -49,7 +48,6 @@ export default function AdminInvitesPage() {
   }
 
   useEffect(() => { load(); }, []);
-
   const isAdmin = meRole === "admin";
 
   return (
