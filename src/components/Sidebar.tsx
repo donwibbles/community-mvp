@@ -4,15 +4,20 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import ChannelList from "./ChannelList";
 
-type Role = "admin" | "user";
-type Me = { email: string | null; id: string | null; role: Role | null };
+type Role = "admin" | "moderator" | "user";
+type Me = {
+  id: string | null;
+  email: string | null;
+  role: Role | null;
+};
 
 export default function Sidebar() {
-  const [me, setMe] = useState<Me>({ email: null, id: null, role: null });
+  const [me, setMe] = useState<Me>({ id: null, email: null, role: null });
 
   useEffect(() => {
     let cleanup = () => {};
     (async () => {
+      // initial load
       const { data } = await supabase.auth.getUser();
       const u = data.user ?? null;
       if (u) {
@@ -21,14 +26,17 @@ export default function Sidebar() {
           .select("role")
           .eq("id", u.id)
           .maybeSingle();
-        setMe({ email: u.email ?? null, id: u.id, role: (prof as any)?.role ?? "user" });
+        const role = ((prof as any)?.role ?? "user") as Role;
+        setMe({ id: u.id, email: u.email ?? null, role });
       } else {
-        setMe({ email: null, id: null, role: null });
+        setMe({ id: null, email: null, role: null });
       }
-      const sub = supabase.auth.onAuthStateChange(async (_e, s) => {
-        const uu = s?.user ?? null;
+
+      // subscribe to auth changes
+      const sub = supabase.auth.onAuthStateChange(async (_e, sess) => {
+        const uu = sess?.user ?? null;
         if (!uu) {
-          setMe({ email: null, id: null, role: null });
+          setMe({ id: null, email: null, role: null });
           return;
         }
         const { data: prof2 } = await supabase
@@ -36,10 +44,13 @@ export default function Sidebar() {
           .select("role")
           .eq("id", uu.id)
           .maybeSingle();
-        setMe({ email: uu.email ?? null, id: uu.id, role: (prof2 as any)?.role ?? "user" });
+        const role = ((prof2 as any)?.role ?? "user") as Role;
+        setMe({ id: uu.id, email: uu.email ?? null, role });
       });
+
       cleanup = () => sub.data.subscription.unsubscribe();
     })();
+
     return () => cleanup();
   }, []);
 
@@ -47,6 +58,9 @@ export default function Sidebar() {
     await supabase.auth.signOut();
     window.location.href = "/login";
   }
+
+  const isAdmin = me.role === "admin";
+  const isModerator = me.role === "moderator";
 
   return (
     <aside
@@ -56,15 +70,16 @@ export default function Sidebar() {
         display: "flex",
         flexDirection: "column",
         gap: 8,
-        minWidth: 220,
+        minWidth: 230,
         height: "100vh",
         justifyContent: "space-between",
       }}
     >
+      {/* top area */}
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ fontWeight: 700 }}>Community</div>
 
-        {/* User chip */}
+        {/* user chip */}
         <div
           style={{
             display: "flex",
@@ -95,8 +110,18 @@ export default function Sidebar() {
               style={{
                 marginTop: 2,
                 fontSize: 11,
-                color: me.role === "admin" ? "#065f46" : "#555",
-                background: me.role === "admin" ? "#ecfdf5" : "#f5f5f5",
+                color:
+                  me.role === "admin"
+                    ? "#065f46"
+                    : me.role === "moderator"
+                    ? "#1e3a8a"
+                    : "#555",
+                background:
+                  me.role === "admin"
+                    ? "#ecfdf5"
+                    : me.role === "moderator"
+                    ? "#eef2ff"
+                    : "#f5f5f5",
                 border: "1px solid #eee",
                 padding: "2px 6px",
                 borderRadius: 999,
@@ -108,21 +133,41 @@ export default function Sidebar() {
           </div>
         </div>
 
-        {/* Main navigation */}
+        {/* main navigation */}
         <nav style={{ display: "grid", gap: 6 }}>
           <Link href="/app" className="hover:underline">Home</Link>
           <Link href="/app/events" className="hover:underline">Events</Link>
-          <Link href="/app/admin/invites" className="hover:underline">Admin · Invites</Link>
-          <Link href="/app/admin/channels" className="hover:underline">Admin · Channels</Link>
+          <Link href="/app/members" className="hover:underline">Members</Link>
+          {/* Admin tools (visible only to admins) */}
+          {isAdmin && (
+            <>
+              <div style={{ marginTop: 8, fontSize: 12, color: "#666", textTransform: "uppercase" }}>
+                Admin
+              </div>
+              <Link href="/app/admin/invites" className="hover:underline">Admin · Invites</Link>
+              <Link href="/app/admin/channels" className="hover:underline">Admin · Channels</Link>
+              <Link href="/app/admin/members" className="hover:underline">Admin · Members</Link>
+            </>
+          )}
+          {/* If you later allow moderators to manage channels, show tools here */}
+          {isModerator && !isAdmin && (
+            <>
+              <div style={{ marginTop: 8, fontSize: 12, color: "#666", textTransform: "uppercase" }}>
+                Moderator
+              </div>
+              {/* Example: <Link href="/app/mod/tools" className="hover:underline">Moderator · Tools</Link> */}
+            </>
+          )}
         </nav>
 
-        {/* Channels */}
+        {/* channels */}
         <div style={{ marginTop: 12, fontSize: 12, color: "#666", textTransform: "uppercase" }}>
           Channels
         </div>
         <ChannelList />
       </div>
 
+      {/* bottom area */}
       <button
         onClick={handleLogout}
         style={{
