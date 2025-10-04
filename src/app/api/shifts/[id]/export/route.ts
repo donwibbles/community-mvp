@@ -7,31 +7,47 @@ export async function GET(
 ) {
   const shiftId = params.id;
 
-  const { data, error } = await supabase
+  // signups + profiles
+  const { data: signups, error: e1 } = await supabase
     .from("shift_signups")
-    .select("user_id, status, checked_in_at, profiles:profiles!inner(display_name, email)")
-    .eq("shift_id", shiftId)
-    .order("status", { ascending: false });
+    .select("user_id, status, checked_in_at")
+    .eq("shift_id", shiftId);
 
-  if (error) return NextResponse.json(error.message, { status: 500 });
+  if (e1) {
+    return NextResponse.json({ error: e1.message }, { status: 500 });
+  }
+  const userIds = Array.from(
+    new Set((signups ?? []).map((s: any) => s.user_id).filter(Boolean))
+  );
+  const { data: profiles, error: e2 } = await supabase
+    .from("profiles")
+    .select("id, display_name, email")
+    .in("id", userIds.length ? userIds : ["00000000-0000-0000-0000-000000000000"]);
 
-  const rows = (data ?? []).map((r: any) => ({
-    Name: r.profiles?.display_name || r.profiles?.email || "",
-    Email: r.profiles?.email || "",
-    Status: r.status,
-    "Checked In At": r.checked_in_at ?? "",
-  }));
+  if (e2) {
+    return NextResponse.json({ error: e2.message }, { status: 500 });
+  }
+  const pmap = new Map(profiles?.map((p: any) => [p.id, p]) ?? []);
 
-  const header = Object.keys(rows[0] ?? { Name: "", Email: "", Status: "", "Checked In At": "" });
-  const csv = [
-    header.join(","),
-    ...rows.map((r) => header.map((h) => String((r as any)[h]).replace(/"/g, '""')).map((v) => `"${v}"`).join(",")),
-  ].join("\n");
+  // CSV
+  const header = ["Name", "Email", "Status", "Checked In At"];
+  const rows = (signups ?? []).map((s: any) => {
+    const p = pmap.get(s.user_id);
+    return [
+      (p?.display_name || p?.email || "").replaceAll(",", " "),
+      (p?.email || "").replaceAll(",", " "),
+      s.status,
+      s.checked_in_at ? new Date(s.checked_in_at).toISOString() : "",
+    ].join(",");
+  });
 
+  const csv = [header.join(","), ...rows].join("\n");
   return new NextResponse(csv, {
+    status: 200,
     headers: {
-      "Content-Type": "text/csv",
+      "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": `attachment; filename="shift-${shiftId}-roster.csv"`,
+      "Cache-Control": "no-store",
     },
   });
 }
