@@ -46,8 +46,7 @@ export default function MessageList({ channelId }: { channelId: string }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
 
-  // ---- loads ---------------------------------------------------------------
-
+  // ---- load current user ---------------------------------------------------
   async function loadMe() {
     const { data } = await supabase.auth.getUser();
     const uid = data.user?.id ?? null;
@@ -63,6 +62,7 @@ export default function MessageList({ channelId }: { channelId: string }) {
     setMe((prof as any) ?? null);
   }
 
+  // ---- load messages + thread ---------------------------------------------
   async function loadMessages() {
     const { data } = await supabase
       .from("messages")
@@ -113,7 +113,6 @@ export default function MessageList({ channelId }: { channelId: string }) {
   }
 
   // ---- actions -------------------------------------------------------------
-
   async function deleteMsg(id: string) {
     await supabase.from("messages").delete().eq("id", id);
     await loadMessages();
@@ -127,8 +126,20 @@ export default function MessageList({ channelId }: { channelId: string }) {
     if (threadParent) await loadThread(threadParent.id);
   }
 
-  // ---- effects -------------------------------------------------------------
+  async function quickReply(parent: Message, content: string) {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    await supabase.from("messages").insert({
+      channel_id: parent.channel_id ?? channelId,
+      parent_id: parent.id,
+      content: trimmed,
+    });
+    // Open/refresh the thread to show the new reply
+    setThreadParent(parent);
+    await loadThread(parent.id);
+  }
 
+  // ---- effects -------------------------------------------------------------
   useEffect(() => {
     loadMe();
   }, []);
@@ -151,21 +162,20 @@ export default function MessageList({ channelId }: { channelId: string }) {
     };
   }, [channelId, threadParent]);
 
-  // ---- permissions ---------------------------------------------------------
-
+  // ---- permissions (UI) ----------------------------------------------------
   const canDelete = (m: Message) =>
     (me?.id && me.id === m.author_id) || me?.role === "admin" || me?.role === "moderator";
 
-  const canEdit = (m: Message) => me?.id && me.id === m.author_id;
+  const canEdit = (m: Message) =>
+    me?.role === "admin" || (me?.id && me.id === m.author_id); // admin can edit all; others only their own
 
-  // ---- UI helpers ----------------------------------------------------------
-
+  // ---- sub-components ------------------------------------------------------
   function AuthorChip({ p }: { p?: Profile }) {
     const name = p?.display_name || p?.email || "Unknown";
-    const badgeBg =
-      p?.role === "admin" ? "#ecfdf5" : p?.role === "moderator" ? "#eef2ff" : "#f5f5f5";
-    const badgeColor =
-      p?.role === "admin" ? "#065f46" : p?.role === "moderator" ? "#1e3a8a" : "#555";
+    const role = p?.role ?? "user";
+    const badgeBg = role === "admin" ? "#ecfdf5" : role === "moderator" ? "#eef2ff" : "#f5f5f5";
+    const badgeColor = role === "admin" ? "#065f46" : role === "moderator" ? "#1e3a8a" : "#555";
+    const icon = role === "admin" ? "👑" : role === "moderator" ? "🛡️" : "";
 
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -185,6 +195,7 @@ export default function MessageList({ channelId }: { channelId: string }) {
               display: "grid",
               placeItems: "center",
               fontSize: 12,
+              background: "#fff",
             }}
           >
             {initialsFrom(p?.display_name, p?.email)}
@@ -193,44 +204,55 @@ export default function MessageList({ channelId }: { channelId: string }) {
 
         <div style={{ fontSize: 13, color: "#222", fontWeight: 600 }}>
           {name}
-          {p?.role && (
-            <span
-              style={{
-                marginLeft: 6,
-                fontSize: 11,
-                padding: "2px 6px",
-                borderRadius: 999,
-                border: "1px solid #eee",
-                background: badgeBg,
-                color: badgeColor,
-              }}
-            >
-              {p.role}
-            </span>
-          )}
+          <span
+            style={{
+              marginLeft: 6,
+              fontSize: 11,
+              padding: "2px 6px",
+              borderRadius: 999,
+              border: "1px solid #eee",
+              background: badgeBg,
+              color: badgeColor,
+            }}
+          >
+            {icon && <span style={{ marginRight: 4 }}>{icon}</span>}
+            {role}
+          </span>
         </div>
       </div>
     );
   }
 
-  function MessageBubble({ m }: { m: Message }) {
+  function MessageBubble({ m, i }: { m: Message; i: number }) {
     const p = m.author_id ? profiles[m.author_id] : undefined;
+    const [hover, setHover] = useState(false);
+    const [quick, setQuick] = useState("");
+    const bg = i % 2 === 0 ? "#ffffff" : "#fcfcfd";
+
+    const notAllowedEdit = !canEdit(m);
+    const notAllowedDelete = !canDelete(m);
 
     return (
       <div
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
         style={{
-          marginBottom: 12,
+          marginBottom: 10,
           border: "1px solid #eee",
           borderRadius: 12,
           padding: 10,
-          background: "#fff",
+          background: bg,
+          transition: "background 120ms ease",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <AuthorChip p={p} />
-          <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>
-            {new Date(m.created_at).toLocaleString()}
-          </div>
+          {/* timestamp only on hover */}
+          {hover && (
+            <div style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>
+              {new Date(m.created_at).toLocaleString()}
+            </div>
+          )}
         </div>
 
         <div style={{ marginTop: 8 }}>
@@ -244,12 +266,14 @@ export default function MessageList({ channelId }: { channelId: string }) {
               <button
                 onClick={() => saveEdit(m.id)}
                 style={{ border: "1px solid #ddd", borderRadius: 8, padding: "8px 10px" }}
+                title="Save edit"
               >
                 Save
               </button>
               <button
                 onClick={() => setEditingId(null)}
                 style={{ border: "1px solid #ddd", borderRadius: 8, padding: "8px 10px" }}
+                title="Cancel edit"
               >
                 Cancel
               </button>
@@ -258,63 +282,118 @@ export default function MessageList({ channelId }: { channelId: string }) {
             <img src={m.content} alt="attachment" style={{ maxWidth: "100%", borderRadius: 8 }} />
           ) : (
             <div style={{ whiteSpace: "pre-wrap" }}>
-              {m.content.split(/(\s+)/).map((t, i) =>
+              {m.content.split(/(\s+)/).map((t, idx) =>
                 /^@[\w.\-]+$/.test(t) ? (
-                  <span key={i} style={{ background: "#fef3c7", padding: "0 3px", borderRadius: 4 }}>
+                  <span key={idx} style={{ background: "#fef3c7", padding: "0 3px", borderRadius: 4 }}>
                     {t}
                   </span>
                 ) : (
-                  <span key={i}>{t}</span>
+                  <span key={idx}>{t}</span>
                 )
               )}
             </div>
           )}
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        {/* actions row */}
+        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
           <button
             onClick={() => {
               setThreadParent(m);
               loadThread(m.id);
             }}
             style={{ fontSize: 12, textDecoration: "underline" }}
+            title="Open thread"
           >
             View thread
           </button>
-          {canEdit(m) && (
-            <button
-              onClick={() => {
-                setEditingId(m.id);
-                setEditValue(m.content);
-              }}
-              style={{ fontSize: 12, textDecoration: "underline" }}
-            >
-              Edit
-            </button>
-          )}
-          {canDelete(m) && (
-            <button
-              onClick={() => deleteMsg(m.id)}
-              style={{ fontSize: 12, color: "#b91c1c", textDecoration: "underline" }}
-            >
-              Delete
-            </button>
-          )}
+
+          <button
+            onClick={() => {
+              setEditingId(m.id);
+              setEditValue(m.content);
+            }}
+            disabled={notAllowedEdit}
+            title={
+              notAllowedEdit
+                ? me?.role === "moderator"
+                  ? "Moderators can’t edit others’ messages"
+                  : "You can only edit your own messages"
+                : "Edit message"
+            }
+            style={{
+              fontSize: 12,
+              textDecoration: notAllowedEdit ? "none" : "underline",
+              color: notAllowedEdit ? "#aaa" : "inherit",
+              cursor: notAllowedEdit ? "not-allowed" : "pointer",
+            }}
+          >
+            Edit
+          </button>
+
+          <button
+            onClick={() => deleteMsg(m.id)}
+            disabled={notAllowedDelete}
+            title={
+              notAllowedDelete
+                ? "You don’t have permission to delete this"
+                : "Delete message"
+            }
+            style={{
+              fontSize: 12,
+              color: notAllowedDelete ? "#d1d5db" : "#b91c1c",
+              textDecoration: notAllowedDelete ? "none" : "underline",
+              cursor: notAllowedDelete ? "not-allowed" : "pointer",
+            }}
+          >
+            Delete
+          </button>
+
+          {/* spacer */}
+          <div style={{ flex: 1 }} />
+
+          {/* reaction bar: hidden until hover */}
+          <div style={{ display: hover ? "block" : "none" }}>
+            <ReactionBar messageId={m.id} />
+          </div>
         </div>
 
-        <ReactionBar messageId={m.id} />
+        {/* inline quick reply (appears on hover) */}
+        {hover && (
+          <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
+            <input
+              value={quick}
+              onChange={(e) => setQuick(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  quickReply(m, quick).then(() => setQuick(""));
+                }
+              }}
+              placeholder="Reply…"
+              style={{ flex: 1, border: "1px solid #ddd", borderRadius: 8, padding: "6px 10px", fontSize: 14 }}
+            />
+            <button
+              onClick={() => {
+                quickReply(m, quick).then(() => setQuick(""));
+              }}
+              style={{ border: "1px solid #ddd", borderRadius: 8, padding: "6px 10px" }}
+              title="Reply to start a thread"
+            >
+              Send
+            </button>
+          </div>
+        )}
       </div>
     );
   }
 
   // ---- render --------------------------------------------------------------
-
   return (
     <div style={{ display: "grid", gridTemplateColumns: threadParent ? "2fr 1fr" : "1fr", gap: 16 }}>
       {/* main column */}
       <div style={{ borderRight: threadParent ? "1px solid #eee" : "none", paddingRight: 12 }}>
-        {messages.map((m) => (
-          <MessageBubble key={m.id} m={m} />
+        {messages.map((m, i) => (
+          <MessageBubble key={m.id} m={m} i={i} />
         ))}
       </div>
 
@@ -323,11 +402,12 @@ export default function MessageList({ channelId }: { channelId: string }) {
         <div style={{ paddingLeft: 12 }}>
           <h3 style={{ fontWeight: 600, marginBottom: 8 }}>Thread</h3>
           <div style={{ marginBottom: 12 }}>
-            <MessageBubble m={threadParent} />
+            {/* show the parent at top for context */}
+            <MessageBubble m={threadParent} i={0} />
           </div>
           <div style={{ display: "grid", gap: 8, marginBottom: 8 }}>
-            {threadMessages.map((tm) => (
-              <MessageBubble key={tm.id} m={tm} />
+            {threadMessages.map((tm, i) => (
+              <MessageBubble key={tm.id} m={tm} i={i} />
             ))}
           </div>
           <ThreadReply
