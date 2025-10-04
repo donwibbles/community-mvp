@@ -1,31 +1,36 @@
 import { NextResponse } from "next/server";
+import { randomBytes } from "crypto";
 import { supabase } from "@/lib/supabase";
 
 export async function POST(
-  req: Request,
+  _req: Request,
   { params }: { params: { id: string } }
 ) {
   const shiftId = params.id;
 
-  // token valid for 6 hours
-  const expires = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+  // 1) generate one-time token (short)
+  const token = randomBytes(16).toString("hex");
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 8).toISOString(); // 8h
 
-  const { data: me } = await supabase.auth.getUser();
-  const userId = me.user?.id;
-  if (!userId) return NextResponse.json({ error: "Not authed" }, { status: 401 });
-
-  // MUST be admin
-  const { data: p } = await supabase.from("profiles").select("role").eq("id", userId).maybeSingle();
-  if ((p as any)?.role !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-
-  const { data, error } = await supabase
+  // 2) store
+  const { error } = await supabase
     .from("shift_checkin_tokens")
-    .insert({ shift_id: shiftId, created_by: userId, expires_at: expires })
-    .select("token, expires_at")
-    .maybeSingle();
+    .insert({ shift_id: shiftId, token, expires_at: expiresAt, used_at: null });
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
-  const url = `${process.env.NEXT_PUBLIC_BASE_URL ?? ""}/checkin?token=${data?.token}`;
-  return NextResponse.json({ token: data?.token, expires_at: data?.expires_at, url });
+  // 3) build public URL
+  const base =
+    process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_BASE_URL;
+  if (!base) {
+    return NextResponse.json(
+      { error: "Missing NEXT_PUBLIC_APP_URL" },
+      { status: 500 }
+    );
+  }
+  const url = `${base}/checkin?token=${encodeURIComponent(token)}`;
+
+  return NextResponse.json({ url });
 }
