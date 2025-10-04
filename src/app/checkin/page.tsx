@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
-// Force this route to be dynamic (no static prerender at build time)
+// Make this route fully dynamic (no prerender)
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export const fetchCache = "force-no-store";
 
 export default function CheckinPage() {
   const q = useSearchParams();
@@ -16,17 +16,14 @@ export default function CheckinPage() {
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
-    // Only run in the browser when we actually have a token param
     if (!token) {
       setValid(false);
       setMsg("Missing check-in token.");
       return;
     }
-
     (async () => {
       try {
         const r = await fetch(`/api/checkin/validate?token=${encodeURIComponent(token)}`, {
-          // avoid caching for safety
           cache: "no-store",
         });
         const data = await r.json();
@@ -37,7 +34,7 @@ export default function CheckinPage() {
         }
         setValid(true);
         setShiftId(data.shift_id);
-      } catch (e: any) {
+      } catch {
         setValid(false);
         setMsg("Unable to validate check-in code.");
       }
@@ -47,7 +44,6 @@ export default function CheckinPage() {
   async function checkIn() {
     const { data: u } = await supabase.auth.getUser();
     if (!u.user) {
-      // send them to login, then they can navigate back to the QR link
       window.location.href = "/login";
       return;
     }
